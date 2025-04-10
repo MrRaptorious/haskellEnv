@@ -1,0 +1,12 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Haskell",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "stack build --allow-different-user && stack run --allow-different-user",
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}
