@@ -1,5 +1,3 @@
-module Main (main) where
-
 import System.Random
 import Data.List
 
