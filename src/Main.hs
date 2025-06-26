@@ -1,13 +1,12 @@
 import System.Random
-import Data.List
-import Control.Exception (catch, SomeException)
+import Data.List (nub, foldl')
+import Control.Exception (catch, SomeException) -- Added for error handling
 
 type Color     = String
 type Colors    = [Color]
 
 colors :: Colors
 colors = ["blue", "red", "yellow", "green", "white"]
-gameSize = 4
 
 
 --  Row represents a row on the board
@@ -93,145 +92,137 @@ naive_player size colors _ = do
   row <- randomRowIO size colors
   return row
 
+-- MASTERMIND PLAYER IMPLEMENTING DONALD KNUTH'S MINIMAX ALGORITHM
+-- How the algorithm finds the solution:
+-- 1. Start with 'S', the list of all possible secret codes.
+-- 2. On each turn:
+--    a. Filter 'S': Remove codes that don't match the feedback from previous guesses.
+--       (Example: If your guess "red blue" got 1 black peg, any code in 'S' that wouldn't
+--       give 1 black peg against "red blue" is removed).
+--    b. Evaluate all *possible guesses*:
+--       i. For each potential guess, calculate the black and white peg feedback you would get,
+--          if that potential guess were played and each code still in 'S' was the actual secret.
+--       ii. For each possible type of feedback (e.g., 1 black, 0 white; 0 black, 2 white),
+--           count how many codes in 'S' would lead to that specific feedback if the potential guess were made.
+--    c. Find the 'worst-case' for each potential guess: This is the largest count found in step 2b-ii,
+--       representing the maximum number of codes that could still be in 'S' if you made this guess.
+--    d. Choose the next guess: Pick the potential guess that has the smallest worst-case count.
+--       This minimizes the maximum number of remaining possibilities.
+-- 3. Repeat until 'S' has only one code left (which is the solution) or you guess correctly.
+
+-- Generates all possible codes of a given size from the available colors.
+-- This creates a Cartesian product of colors for 'size' positions.
+allPossibleCodes :: Int -> Colors -> [Row]
+allPossibleCodes 0 _ = [[]] -- Base case: for size 0, only an empty list is possible
+allPossibleCodes size cs = [ c : rest | c <- cs, rest <- allPossibleCodes (size - 1) cs ]
 
 
--------------------------------------------------------------------------------------
------------------------- Implementation of an smart Player --------------------------
-------------------- following Donald Knuth MinMax Algorithm -------------------------
--- https://www.cs.uni.edu/~wallingf/teaching/cs3530/resources/knuth-mastermind.pdf --
--------------------------------------------------------------------------------------
-{-
-Context for the provided Solution (MinMax Algorithm):
+-- Filters the set of possible secret codes (S) based on the board history.
+-- For each past guess and its feedback, it removes codes from 'currentS'
+-- that are inconsistent with that feedback.
+filterPossibleCodes :: [Row] -> Board -> [Row]
+filterPossibleCodes initialS [] = initialS -- If no board history, all initialS are possible
+filterPossibleCodes currentS ((guess, answer) : restOfBoard) =
+    let -- Filter codes 's' from 'currentS' that would yield 'answer' if 'guess' were the secret
+        filteredS = [ s | s <- currentS, answerIs s guess == answer ]
+    in filterPossibleCodes filteredS restOfBoard -- Recursively filter with the rest of the board
 
-A "code" in Mastermind refers to a sequence of colors of a specific length.
-This can be the secret code chosen by the game, or any of the possible combinations of colors that the player might guess.
-The smart player's objective is to efficiently narrow down the set of all potential secret codes.
 
-A "score" is assigned to a potential guess.
-This score quantifies the maximum number of remaining possible secret codes after making that particular guess and receiving feedback.
-The core principle of the algorithm is to minimize this "worst-case scenario" (the "MinMax" aspect).
-A lower score indicates a more effective guess, as it guarantees a greater reduction in the set of possibilities, regardless of the actual feedback received.
+-- Generates all valid (black, white) peg combinations for a given code length (size).
+-- For example, for size 4: (4,0), (0,0), (1,2), etc.
+possibleAnswers :: Int -> [Answer]
+possibleAnswers size =
+    [ (b, w) | b <- [0..size]     -- Black pegs can range from 0 to size
+             , w <- [0..size - b] -- White pegs can range from 0 to (size - black pegs)
+    ]
 
-The player makes and selects an optimal guess through a systematic process:
-1.  Initially, the player considers the entire set of all possible secret codes that can be formed given the game's size and available colors.
-2.  In each turn, the player refines this set of possible codes. 
-    It does this by filtering out any codes that are inconsistent with the history of previous guesses and their corresponding feedback (the black and white pegs received).
-    Only codes that could still be the secret code, given the past interactions, remain in this refined set.
-3.  To determine the next optimal guess, the player evaluates every possible code combination as a potential next guess.
-    This evaluation is not limited to only the codes currently in the refinedCodeSet; it considers any valid code combination.
-4.  For each of these potential guesses, the player calculates its "score." This involves a simulation:
-    a.  It simulates all possible feedback (combinations of black and white pegs) that could be received if this potential guess were made against any of the codes currently in the refinedCodeSet.
-    b.  For each simulated feedback, it determines how many of the currently `remainingPossibleCodes` would be consistent with that particular feedback.
-    c.  The "score" for that potential guess is then set to the maximum number of consistent codes found across all these simulated feedbacks.
-        This represents the absolute worst outcome in terms of how many possibilities would remain after making that guess.
-5.  Finally, the player selects the potential guess that has the minimum score among all the evaluated potential guesses.
-    This is the essence of the "MinMax" strategy: choose the guess that minimizes the maximum possible number of remaining solutions.
-6.  A special case exists: if at any point the refinedCodeSet contains only a single code, that code is definitively the secret solution.
-    In this scenario, the player immediately returns that single code as the next guess, as the game is effectively won.
--}
 
--- Helper for comparing scores
-compareScores :: (a, Int) -> (a, Int) -> Ordering
-compareScores (_,s1) (_, s2) = compare s1 s2
+-- Finds the best next guess according to Knuth's Minimax algorithm.
+-- This function aims to minimize the maximum number of remaining possibilities ('currentS')
+-- for any possible feedback from a candidate guess.
+findBestGuess :: Int -> [Row] -> [Row] -> [Answer] -> Row
+findBestGuess size allCodes currentS allPossibleAnswers =
+    let -- Helper function to evaluate a candidate guess.
+        -- It returns the maximum number of possibilities remaining in 'currentS' for any feedback
+        -- if 'candidate' were the guess.
+        evaluateCandidate :: Row -> Int
+        evaluateCandidate candidate =
+            let -- For each possible feedback 'ans', count how many codes in 'currentS'
+                -- would produce that 'ans' if 'candidate' was the guess.
+                counts = [ length [ s | s <- currentS, answerIs s candidate == ans ]
+                         | ans <- allPossibleAnswers ]
+            in if null counts then 0 else maximum counts -- Return 0 if no counts (e.g., currentS is empty)
 
--- Generates all possible code combinations
-generateAllCodes :: Int -> Colors -> [Row]
-generateAllCodes n availableColors = sequence (replicate n availableColors)
+        -- Initialize the best guess and its score. We take the first element of 'allCodes'
+        -- as a starting point. 'allCodes' is guaranteed to not be empty for valid 'size'.
+        initialBestGuess = head allCodes
+        initialMinMaxScore = evaluateCandidate initialBestGuess
 
--- Filters a list of codes based on a guess and its answer
-pruneCodes :: Row -> Answer -> [Row] -> [Row]
-pruneCodes currentGuess feedback possibleCodes =
-  filter (\code -> answerIs currentGuess code == feedback) possibleCodes
+        -- Use foldl' to iterate efficiently through all possible codes ('allCodes') to find the best one.
+        -- Knuth's algorithm checks *all* possible codes, not just those currently in 'currentS',
+        -- to find the optimal next guess.
+        (bestG, _) = foldl'
+            (\(currentBestG, currentMinMaxScore) candidateG ->
+                let candidateMaxScore = evaluateCandidate candidateG
+                in if candidateMaxScore < currentMinMaxScore
+                   then (candidateG, candidateMaxScore) -- Found a better guess (smaller max group size)
+                   else if candidateMaxScore == currentMinMaxScore then
+                            -- Tie-breaking rule (Knuth's 5.2 optimization):
+                            -- If scores are tied, prefer a candidate guess that is also currently
+                            -- in the set of possible secret codes ('currentS').
+                            if elem candidateG currentS && not (elem currentBestG currentS)
+                            then (candidateG, candidateMaxScore) -- Candidate is in S, but current best is not
+                            else (currentBestG, currentMinMaxScore) -- Keep current best
+                   else (currentBestG, currentMinMaxScore) -- Candidate is worse, keep current best
+            )
+            (initialBestGuess, initialMinMaxScore) -- Initial accumulator value
+            (tail allCodes)                         -- List to fold over (all codes except the first one)
+    in bestG
 
--- Calculates the "score" of a single guess based on the worst-case scenario
--- A lower score is better, indicating fewer remaining possible codes.
-evaluateGuessPotential :: Int -> [Row] -> Row -> Int
-evaluateGuessPotential codeLength remainingCodes currentGuess =
-  let
-    -- Generates all possible answer combinations for a given game size.
-    -- This ensures we cover all (black, white) peg possibilities.
-    generateAllAnswers :: Int -> [Answer]
-    generateAllAnswers size =
-      [ (b, w) | b <- [0..size]
-               , w <- [0..size]
-               , b + w <= size
-               , b >= 0, w >= 0
-      ]
 
-    allPossibleAnswers = generateAllAnswers codeLength
-
-    -- For each possible answer, determine how many codes from `remainingCodes`
-    -- would produce that answer if `currentGuess` were the actual hidden code.
-    calculateAnswerCounts :: Answer -> Int
-    calculateAnswerCounts ans =
-      length (filter (\code -> answerIs currentGuess code == ans) remainingCodes)
-
-    -- Create a list of counts for each possible answer
-    answerCounts = map calculateAnswerCounts allPossibleAnswers
-  in
-    -- The score of the guess is the maximum count among all possible answers.
-    -- This represents the worst-case number of remaining codes.
-    maximum (0:answerCounts)
-
--- Determines the next optimal guess based on the MinMax algorithm.
--- It finds the guess that minimizes the maximum number of remaining possible codes.
-selectOptimalGuess :: Int -> Colors -> [Row] -> Row
-selectOptimalGuess codeLength availableColors currentPossibleCodes =
-  let
-    -- Generate all possible guesses (not just the current possible codes)
-    -- This helps find a guess that might not be in `currentPossibleCodes` but
-    -- is strategically good for narrowing down options.
-    allCandidateGuesses = generateAllCodes codeLength availableColors
-
-    -- Calculate the score for each candidate guess
-    scoredGuesses = [ (g, evaluateGuessPotential codeLength currentPossibleCodes g)
-                    | g <- allCandidateGuesses
-                    ]
-
-    -- Find the guess with the minimum (best) score
-    -- `minimumBy` with `compareScores` ensures we get the guess associated with the lowest score.
-    bestMove = fst (minimumBy compareScores scoredGuesses)
-  in
-    bestMove
-
--- The "smart" player's logic to determine the next guess.
--- It handles error cases and applies the core MinMax strategy.
-smartPlayerLogic :: Int -> Colors -> Board -> IO Row
-smartPlayerLogic size colors gameBoard = do
-  catch
-    (do
-      -- Start with all possible codes for the given game size and colors.
-      let initialCodeSet = generateAllCodes size colors
-
-      -- Refine the set of possible codes based on the history of guesses and answers.
-      -- This uses a fold to sequentially apply filtering for each turn on the board.
-      let refinedCodeSet = foldl (\codes (prevGuess, feedback) -> pruneCodes prevGuess feedback codes)
-                                 initialCodeSet
-                                 gameBoard
-
-      -- Decide the next move:
-      -- If only one code remains, that's the solution.
-      -- Otherwise, use the MinMax strategy to find the optimal guess.
-      case refinedCodeSet of
-        [singleCode] -> return singleCode
-        _            -> return $ selectOptimalGuess size colors refinedCodeSet
-    )
-    (\e -> do
-        putStrLn $ "An error occurred in smartPlayerLogic: " ++ show (e :: SomeException)
-        putStrLn "Falling back to a random guess."
-        -- Fallback to a random guess in case of an error
-        randomRowIO size colors
-    )
-
--- Renamed player function to reflect the "smart" strategy.
+-- The Mastermind player function implementing Knuth's Minimax algorithm.
+-- This is the core function to be used in the 'mmind' game loop.
 player :: Int -> Colors -> Board -> IO Row
-player = smartPlayerLogic
+player size colorsList board = do
+    catch
+      (do
+          -- Generate all possible codes once
+          let allCodes = allPossibleCodes size colorsList
+          -- Filter the set of possible secret codes based on the current board history
+          let currentS = filterPossibleCodes allCodes board
+          -- Pre-calculate all possible (black, white) feedback combinations
+          let allPlausibleAnswers = possibleAnswers size
+
+          if null board
+              then -- This is the first guess of the game.
+                   -- Knuth suggests a fixed optimal first guess, typically "AABB".
+                   -- For size 4 and the given colors, "blue blue red red" is a commonly
+                   -- accepted excellent first guess that minimizes the worst-case scenario.
+                  if size >= 4 && "blue" `elem` colorsList && "red" `elem` colorsList
+                      then return ["blue", "blue", "red", "red"]
+                      else do
+                          -- Fallback for smaller sizes or different color sets:
+                          -- Just cycle through the available colors to create a first guess.
+                          let defaultFirstGuess = take size (cycle colorsList)
+                          return defaultFirstGuess
+              else do
+                  -- If 'currentS' contains only one element, that must be the secret code.
+                  -- Guess it immediately to win.
+                  if length currentS == 1
+                      then return (head currentS)
+                      else do
+                          -- Otherwise, use the Minimax algorithm to find the next best guess.
+                          let nextGuess = findBestGuess size allCodes currentS allPlausibleAnswers
+                          return nextGuess
+      )
+      (\e -> do
+          putStrLn $ "An error occurred in player function: " ++ show (e :: SomeException)
+          putStrLn "Falling back to a random guess."
+          randomRowIO size colorsList -- Fallback to a random guess in case of an error
+      )
 
 
-----------------------------------------------------
---        End of own Implementation               --
-----------------------------------------------------
-
-play_mm = mmind gameSize colors validGuess answerIs player
+-- Defines the game to be played using the new 'player' function
+play_mm = mmind 4 colors validGuess answerIs player
 
 main = play_mm
