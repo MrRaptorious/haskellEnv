@@ -136,48 +136,46 @@ possibleAnswers size =
              , w <- [0..size - b] -- White pegs can range from 0 to (size - black pegs)
     ]
 
+-- Calculates the maximum number of remaining possible secret codes ('currentS')
+-- for a given 'candidate' guess across all possible feedback answers.
+-- This represents the "worst-case" group size if 'candidate' were played.
+calculateMaxRemaining :: [Row] -> [Answer] -> Row -> Int
+calculateMaxRemaining currentS allPossibleAnswers candidate =
+    let counts = [ length [ s | s <- currentS, answerIs s candidate == ans ]
+                 | ans <- allPossibleAnswers ]
+    in if null counts then 0 else maximum counts
+
+-- Determines if a 'candidateG' is a better choice than the 'currentBestG'
+-- based on their minimax scores and Knuth's tie-breaking rule.
+-- Returns True if 'candidateG' has a smaller worst-case score, or if scores are equal
+-- and 'candidateG' is in 'currentS' while 'currentBestG' is not.
+isBetterGuess :: Row -> Int -> Row -> Int -> [Row] -> Bool
+isBetterGuess currentBestG currentMinMaxScore candidateG candidateMaxScore currentS =
+    candidateMaxScore < currentMinMaxScore
+    || (candidateMaxScore == currentMinMaxScore
+        && elem candidateG currentS
+        && not (elem currentBestG currentS))
+
+-- Recursively finds the best guess from a list of 'remainingCandidates'.
+-- It maintains the 'currentBestG' found so far and its 'currentMinMaxScore'.
+-- It calls 'calculateMaxRemaining' and 'isBetterGuess' for each candidate.
+findBestGuessRecursive :: [Row] -> [Answer] -> [Row] -> Row -> Int -> Row
+findBestGuessRecursive currentS allPossibleAnswers [] bestG _ = bestG
+findBestGuessRecursive currentS allPossibleAnswers (candidateG : remainingCandidates) currentBestG currentMinMaxScore =
+    let candidateMaxScore = calculateMaxRemaining currentS allPossibleAnswers candidateG
+    in if isBetterGuess currentBestG currentMinMaxScore candidateG candidateMaxScore currentS
+       then findBestGuessRecursive currentS allPossibleAnswers remainingCandidates candidateG candidateMaxScore
+       else findBestGuessRecursive currentS allPossibleAnswers remainingCandidates currentBestG currentMinMaxScore
 
 -- Finds the best next guess according to Knuth's Minimax algorithm.
 -- This function aims to minimize the maximum number of remaining possibilities ('currentS')
 -- for any possible feedback from a candidate guess.
+-- It initializes the process and then calls a recursive helper to find the optimal guess.
 findBestGuess :: Int -> [Row] -> [Row] -> [Answer] -> Row
 findBestGuess size allCodes currentS allPossibleAnswers =
-    let -- Helper function to evaluate a candidate guess.
-        -- It returns the maximum number of possibilities remaining in 'currentS' for any feedback
-        -- if 'candidate' were the guess.
-        evaluateCandidate :: Row -> Int
-        evaluateCandidate candidate =
-            let -- For each possible feedback 'ans', count how many codes in 'currentS'
-                -- would produce that 'ans' if 'candidate' was the guess.
-                counts = [ length [ s | s <- currentS, answerIs s candidate == ans ]
-                         | ans <- allPossibleAnswers ]
-            in if null counts then 0 else maximum counts -- Return 0 if no counts (e.g., currentS is empty)
-
-        -- Initialize the best guess and its score. We take the first element of 'allCodes'
-        -- as a starting point. 'allCodes' is guaranteed to not be empty for valid 'size'.
-        initialBestGuess = head allCodes
-        initialMinMaxScore = evaluateCandidate initialBestGuess
-
-        -- Use foldl' to iterate efficiently through all possible codes ('allCodes') to find the best one.
-        -- Knuth's algorithm checks *all* possible codes, not just those currently in 'currentS',
-        -- to find the optimal next guess.
-        (bestG, _) = foldl'
-            (\(currentBestG, currentMinMaxScore) candidateG ->
-                let candidateMaxScore = evaluateCandidate candidateG
-                in if candidateMaxScore < currentMinMaxScore
-                   then (candidateG, candidateMaxScore) -- Found a better guess (smaller max group size)
-                   else if candidateMaxScore == currentMinMaxScore then
-                            -- Tie-breaking rule (Knuth's 5.2 optimization):
-                            -- If scores are tied, prefer a candidate guess that is also currently
-                            -- in the set of possible secret codes ('currentS').
-                            if elem candidateG currentS && not (elem currentBestG currentS)
-                            then (candidateG, candidateMaxScore) -- Candidate is in S, but current best is not
-                            else (currentBestG, currentMinMaxScore) -- Keep current best
-                   else (currentBestG, currentMinMaxScore) -- Candidate is worse, keep current best
-            )
-            (initialBestGuess, initialMinMaxScore) -- Initial accumulator value
-            (tail allCodes)                         -- List to fold over (all codes except the first one)
-    in bestG
+    let initialBestGuess = head allCodes
+        initialMinMaxScore = calculateMaxRemaining currentS allPossibleAnswers initialBestGuess
+    in findBestGuessRecursive currentS allPossibleAnswers (tail allCodes) initialBestGuess initialMinMaxScore
 
 
 -- The Mastermind player function implementing Knuth's Minimax algorithm.
